@@ -1,1 +1,75 @@
-
+{
+  "dailyTasksMessageData": {
+    "2025-06-09": {
+      "introMessageId": "1381661432457855017",
+      "messageId": "1381661434173460662"
+    },
+    "2025-06-12": {
+      "introMessageId": "1382714931794935868",
+      "messageId": "1382714933573320765"
+    }
+  },
+  "publicShopMessageData": {
+    "2025-06-09": {
+      "messageId": "1381661435955904614"
+    },
+    "2025-06-12": {
+      "messageId": "1382714935523676241"
+    }
+  },
+  "useItemsMessageData": {
+    "messageId": "1382714937134284912"
+  },
+  "userData": {
+    "766613407234523178": {
+      "completed_tasks_by_date": {
+        "2025-06-09": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "2025-06-12": [
+          5
+        ]
+      },
+      "items": [
+        "MLBB Shard",
+        "Talk Pass",
+        "Talk Pass",
+        "MLBB Shard"
+      ],
+      "daily_rewards_claimed": {
+        "2025-06-09": {
+          "mainGroup": true,
+          "specialTask": true
+        },
+        "2025-06-12": {
+          "specialTask": true
+        }
+      },
+      "pass_usage_by_date": {
+        "Talk Pass": "2025-06-12"
+      },
+      "discordUserId": "766613407234523178",
+      "negative_shards": 0,
+      "talk_shards_count": 4
+    },
+    "1381077073275125811": {
+      "completed_tasks_by_date": {},
+      "items": [],
+      "daily_rewards_claimed": {},
+      "pass_usage_by_date": {},
+      "negative_shards": 0,
+      "talk_shards_count": 0,
+      "discordUserId": "1381077073275125811"
+    }
+  },
+  "chatChannelState": {
+    "isUnlocked": true,
+    "unlockedBy": "766613407234523178",
+    "unlockedDate": "2025-06-12"
+  }
+}
