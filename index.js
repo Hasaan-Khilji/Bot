@@ -22,6 +22,7 @@ const SHOP_CHANNEL_ID = process.env.SHOP_CHANNEL_ID;
 const CHAT_CHANNEL_ID = process.env.CHAT_CHANNEL_ID;
 const USE_ITEMS_CHANNEL_ID = process.env.USE_ITEMS_CHANNEL_ID;
 const ANNOUNCEMENT_CHANNEL_ID = process.env.ANNOUNCEMENT_CHANNEL_ID;
+const EMERGENCY_CHANNEL_ID = process.env.EMERGENCY_CHANNEL_ID; // New: Emergency channel
 
 // --- Task & Reward Definitions ---
 const FIXED_DAILY_TASKS = ["Fajr", "Zuhr", "Asr", "Maghrib", "Ish'a", "Qur'an"];
@@ -47,6 +48,7 @@ const ALL_VALID_ITEMS = [TALK_SHARD_NAME, MLBB_SHARD_NAME, TALK_PASS_NAME, MLBB_
 let dailyTasksMessageData = {};
 let publicShopMessageData = {};
 let useItemsMessageData = {};
+let emergencyMessageData = {}; // New: Storage for emergency message
 let userData = {};
 let chatChannelState = { isUnlocked: false, unlockedBy: null, unlockedDate: null };
 
@@ -68,16 +70,24 @@ async function sendDM(userId, message) {
     }
 }
 
-async function deleteMessageSafe(channel, messageId, description = 'message') {
+async function deleteMessageSafe(channel, messageId) {
     if (!channel || !messageId) return;
     try {
-        const msg = await channel.messages.fetch(messageId);
-        await msg.delete();
+        await channel.messages.delete(messageId);
     } catch (err) {
         if (err.code !== 10008) { // Ignore "Unknown Message" error
-            console.warn(`Could not delete ${description} (${messageId}):`, err);
+            console.warn(`Could not delete message ${messageId}:`, err.message);
         }
     }
+}
+
+function generateMyItemsMessage(userId, username) {
+    return `**__${username}'s Items__**\n\n`
+         + `${getItemDisplayWithQuantity(TALK_SHARD_NAME, countUserItem(userId, TALK_SHARD_NAME))}\n`
+         + `${getItemDisplayWithQuantity(MLBB_SHARD_NAME, countUserItem(userId, MLBB_SHARD_NAME))}\n`
+         + `${getItemDisplayWithQuantity(TALK_PASS_NAME, countUserItem(userId, TALK_PASS_NAME))}\n`
+         + `${getItemDisplayWithQuantity(MLBB_PASS_NAME, countUserItem(userId, MLBB_PASS_NAME))}\n`
+         + `${getItemDisplayWithQuantity(NEGATIVE_SHARD_NAME, countUserItem(userId, NEGATIVE_SHARD_NAME))}`;
 }
 
 // --- File & Data Operations ---
@@ -88,37 +98,20 @@ async function loadData() {
         dailyTasksMessageData = parsedData.dailyTasksMessageData || {};
         publicShopMessageData = parsedData.publicShopMessageData || {};
         useItemsMessageData = parsedData.useItemsMessageData || {};
+        emergencyMessageData = parsedData.emergencyMessageData || {}; // Load emergency message data
         userData = parsedData.userData || {};
         chatChannelState = parsedData.chatChannelState || { isUnlocked: false, unlockedBy: null, unlockedDate: null };
         console.log('Data loaded successfully.');
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            console.log('bot_data.json not found, initializing with empty data.');
-            userData = {};
-        } else {
-            console.error('Error loading data:', error);
-            dailyTasksMessageData = {};
-            publicShopMessageData = {};
-            useItemsMessageData = {};
-            userData = {};
-            chatChannelState = { isUnlocked: false, unlockedBy: null, unlockedDate: null };
-        }
+        if (error.code !== 'ENOENT') console.error('Error loading data:', error);
+        else console.log('bot_data.json not found, initializing empty data.');
     }
-    for (const userId in userData) {
-        const user = userData[userId];
-        user.pass_usage_by_date = user.pass_usage_by_date || {};
-        user.negative_shards = user.negative_shards ?? 0;
-        if (typeof user.talk_shards_count !== 'number') {
-            user.talk_shards_count = (user.items || []).filter(item => item === TALK_SHARD_NAME).length;
-            user.items = (user.items || []).filter(item => item !== TALK_SHARD_NAME);
-        }
-    }
-    if (Object.keys(userData).length > 0) await saveData();
 }
 
 async function saveData() {
     try {
-        await fs.writeFile(DATA_FILE, JSON.stringify({ dailyTasksMessageData, publicShopMessageData, useItemsMessageData, userData, chatChannelState }, null, 2), 'utf8');
+        const dataToSave = { dailyTasksMessageData, publicShopMessageData, useItemsMessageData, emergencyMessageData, userData, chatChannelState };
+        await fs.writeFile(DATA_FILE, JSON.stringify(dataToSave, null, 2), 'utf8');
     } catch (error) {
         console.error('Error saving data:', error);
     }
@@ -127,7 +120,7 @@ async function saveData() {
 function getFormattedDate(offsetDays = 0) {
     const date = new Date();
     date.setDate(date.getDate() - offsetDays);
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Karachi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
+    return new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
 
 const getTodayDate = () => getFormattedDate(0);
@@ -137,12 +130,8 @@ const getTwoDaysAgoDate = () => getFormattedDate(2);
 async function getOrCreateUserData(userId) {
     if (!userData[userId]) {
         userData[userId] = {
-            completed_tasks_by_date: {},
-            items: [],
-            daily_rewards_claimed: {},
-            pass_usage_by_date: {},
-            negative_shards: 0,
-            talk_shards_count: 0,
+            completed_tasks_by_date: {}, items: [], daily_rewards_claimed: {},
+            pass_usage_by_date: {}, negative_shards: 0, talk_shards_count: 0,
             discordUserId: userId
         };
         await saveData();
@@ -154,9 +143,7 @@ async function addItemToUser(userId, item, quantity = 1) {
     const user = await getOrCreateUserData(userId);
     if (item === NEGATIVE_SHARD_NAME) user.negative_shards += quantity;
     else if (item === TALK_SHARD_NAME) user.talk_shards_count += quantity;
-    else {
-        for (let i = 0; i < quantity; i++) user.items.push(item);
-    }
+    else for (let i = 0; i < quantity; i++) user.items.push(item);
     await saveData();
 }
 
@@ -164,29 +151,20 @@ async function removeItemsFromUser(userId, itemToRemove, quantity) {
     const user = await getOrCreateUserData(userId);
     if (itemToRemove === TALK_SHARD_NAME) {
         user.talk_shards_count -= quantity;
-        await saveData();
-        return true;
+        await saveData(); return true;
     }
     if (itemToRemove === NEGATIVE_SHARD_NAME) {
         user.negative_shards = Math.max(0, user.negative_shards - quantity);
-        await saveData();
-        return true;
+        await saveData(); return true;
     }
-
     let removedCount = 0;
     const newItems = [];
     for (const item of user.items) {
-        if (item === itemToRemove && removedCount < quantity) {
-            removedCount++;
-        } else {
-            newItems.push(item);
-        }
+        if (item === itemToRemove && removedCount < quantity) removedCount++;
+        else newItems.push(item);
     }
-
     if (removedCount === quantity) {
-        user.items = newItems;
-        await saveData();
-        return true;
+        user.items = newItems; await saveData(); return true;
     }
     return false;
 }
@@ -200,7 +178,6 @@ async function setItemsForUser(userId, itemToSet, quantity) {
         for (let i = 0; i < quantity; i++) user.items.push(itemToSet);
     }
     await saveData();
-    return true;
 }
 
 function countUserItem(userId, itemName) {
@@ -208,52 +185,41 @@ function countUserItem(userId, itemName) {
     if (!user) return 0;
     if (itemName === NEGATIVE_SHARD_NAME) return user.negative_shards ?? 0;
     if (itemName === TALK_SHARD_NAME) return user.talk_shards_count ?? 0;
-    return user.items.filter(item => item === itemName).length;
+    return (user.items || []).filter(item => item === itemName).length;
 }
 
 // --- Message Generation & Sending ---
 function generateDailyTaskListMessage(date, allUserData) {
     let content = `**__Daily To-Do List for ${date}__**\n\nClick a button to mark a task as complete for yourself!\n\n`;
-    content += `**Main Tasks (Complete all 5 for: ${getItemDisplay(MAIN_GROUP_REWARD_ITEM)})**\n`;
+    content += `**Prayers (Complete all 5 for: ${getItemDisplay(MAIN_GROUP_REWARD_ITEM)})**\n`;
     for (let i = 0; i < 5; i++) {
         const task = FIXED_DAILY_TASKS[i];
-        const completers = Object.keys(allUserData)
-            .filter(userId => allUserData[userId].completed_tasks_by_date[date]?.includes(i))
-            .map(userId => `<@${userId}>`);
+        const completers = Object.keys(allUserData).filter(userId => allUserData[userId].completed_tasks_by_date[date]?.includes(i)).map(userId => `<@${userId}>`);
         content += `**${i + 1}. ${task}**\n> ${completers.length > 0 ? `Completed by: ${completers.join(', ')}` : 'No one has completed this yet.'}\n`;
     }
-
     content += `\n-----------------------------------\n\n`;
     const specialTaskIndex = 5;
     content += `**Special Task (Complete for: ${getItemDisplay(SPECIAL_TASK_REWARD_ITEM)})**\n`;
-    const specialCompleters = Object.keys(allUserData)
-        .filter(userId => allUserData[userId].completed_tasks_by_date[date]?.includes(specialTaskIndex))
-        .map(userId => `<@${userId}>`);
+    const specialCompleters = Object.keys(allUserData).filter(userId => allUserData[userId].completed_tasks_by_date[date]?.includes(specialTaskIndex)).map(userId => `<@${userId}>`);
     content += `**${specialTaskIndex + 1}. ${FIXED_DAILY_TASKS[specialTaskIndex]}**\n> ${specialCompleters.length > 0 ? `Completed by: ${specialCompleters.join(', ')}` : 'No one has completed this yet.'}\n`;
-
     const row1 = new ActionRowBuilder();
     const row2 = new ActionRowBuilder();
     FIXED_DAILY_TASKS.forEach((task, index) => {
         const button = new ButtonBuilder().setCustomId(`complete_task_${index}_${date}`).setLabel(task).setStyle(ButtonStyle.Primary);
         (index < 5 ? row1 : row2).addComponents(button);
     });
-
     return { content, components: [row1, row2] };
 }
 
 function generateShopMessage(userId) {
-    const shopContent = `**__Welcome to the Shop!__**\n\n`
-                      + `Trade your hard-earned items here!\n\n`
-                      + `**Available Trades:**\n`
-                      + `1. Trade 7 ${getItemDisplay(TALK_SHARD_NAME)} for 1 ${getItemDisplay(TALK_PASS_NAME)}\n`
-                      + `2. Trade 3 ${getItemDisplay(MLBB_SHARD_NAME)} for 1 ${getItemDisplay(MLBB_PASS_NAME)}\n`
-                      + `3. Trade 2 ${getItemDisplay(MLBB_PASS_NAME)} for 1 ${getItemDisplay(TALK_PASS_NAME)}\n\n`
-                      + `Your inventory:\n`
-                      + `  ${getItemDisplayWithQuantity(TALK_SHARD_NAME, countUserItem(userId, TALK_SHARD_NAME))}\n`
-                      + `  ${getItemDisplayWithQuantity(MLBB_SHARD_NAME, countUserItem(userId, MLBB_SHARD_NAME))}\n`
-                      + `  ${getItemDisplayWithQuantity(TALK_PASS_NAME, countUserItem(userId, TALK_PASS_NAME))}\n`
-                      + `  ${getItemDisplayWithQuantity(MLBB_PASS_NAME, countUserItem(userId, MLBB_PASS_NAME))}`;
-
+    const shopContent = `**__Welcome to the Shop!__**\n\n**Available Trades:**\n`
+        + `1. Trade 7 ${getItemDisplay(TALK_SHARD_NAME)} for 1 ${getItemDisplay(TALK_PASS_NAME)}\n`
+        + `2. Trade 3 ${getItemDisplay(MLBB_SHARD_NAME)} for 1 ${getItemDisplay(MLBB_PASS_NAME)}\n`
+        + `3. Trade 2 ${getItemDisplay(MLBB_PASS_NAME)} for 1 ${getItemDisplay(TALK_PASS_NAME)}\n\n`
+        + `Your inventory:\n${getItemDisplayWithQuantity(TALK_SHARD_NAME, countUserItem(userId, TALK_SHARD_NAME))}\n`
+        + `  ${getItemDisplayWithQuantity(MLBB_SHARD_NAME, countUserItem(userId, MLBB_SHARD_NAME))}\n`
+        + `  ${getItemDisplayWithQuantity(TALK_PASS_NAME, countUserItem(userId, TALK_PASS_NAME))}\n`
+        + `  ${getItemDisplayWithQuantity(MLBB_PASS_NAME, countUserItem(userId, MLBB_PASS_NAME))}`;
     const tradeRow = new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId('trade_talk_shards_to_talk_pass').setLabel(`Trade 7 ${getItemDisplay(TALK_SHARD_NAME)} for 1 ${getItemDisplay(TALK_PASS_NAME)}`).setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId('trade_mlbb_shards_to_mlbb_pass').setLabel(`Trade 3 ${getItemDisplay(MLBB_SHARD_NAME)} for 1 ${getItemDisplay(MLBB_PASS_NAME)}`).setStyle(ButtonStyle.Primary),
@@ -263,48 +229,39 @@ function generateShopMessage(userId) {
     return { content: shopContent, components: [tradeRow, dismissRow] };
 }
 
-async function sendDailyTaskList(channel, introMessageContent = null) {
-    const todayDate = getTodayDate();
-    const { content, components } = generateDailyTaskListMessage(todayDate, userData);
+async function sendDailyMessage(channelId, messageData, messageKey, generateFunction) {
+    if (!channelId) return;
     try {
-        let introMessageId = introMessageContent ? (await channel.send(introMessageContent)).id : null;
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || channel.type !== ChannelType.GuildText) return;
+
+        if (messageData[messageKey]) await deleteMessageSafe(channel, messageData[messageKey]);
+
+        const { content, components } = generateFunction();
         const sentMessage = await channel.send({ content, components });
-        dailyTasksMessageData[todayDate] = { introMessageId, messageId: sentMessage.id };
+        messageData[messageKey] = sentMessage.id;
         await saveData();
-        console.log(`Daily tasks message sent/updated for ${todayDate} in channel ${channel.id}`);
-    } catch (error) {
-        console.error(`Failed to send daily tasks message:`, error);
-    }
+    } catch (e) { console.error(`Failed to post message for ${messageKey}:`, e); }
 }
 
-async function postShopMessage() {
-    try {
-        const channel = await client.channels.fetch(SHOP_CHANNEL_ID);
-        if (!channel || channel.type !== ChannelType.GuildText) return;
-        const today = getTodayDate();
-        const content = `**__Today's Bazaar is Open!__**\n\nClick the button below to view trades and your personal inventory.`;
-        const components = [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_personal_shop').setLabel('Visit My Personal Shop').setStyle(ButtonStyle.Success))];
-        const sentMessage = await channel.send({ content, components });
-        publicShopMessageData[today] = { messageId: sentMessage.id };
-        await saveData();
-    } catch (e) { console.error("Failed to post shop message:", e) }
-}
-
-async function postUseItemsMessage() {
-    try {
-        const channel = await client.channels.fetch(USE_ITEMS_CHANNEL_ID);
-        if (!channel || channel.type !== ChannelType.GuildText) return;
-        const content = `**__Use Your Items Here!__**\n\n- **${getItemDisplay(TALK_PASS_NAME)}**: Unlocks the chat channel.\n- **${getItemDisplay(MLBB_PASS_NAME)}**: Logs usage for fun.`;
-        const components = [new ActionRowBuilder().addComponents(
+async function postAllDailyMessages() {
+    await sendDailyMessage(TARGET_CHANNEL_ID, dailyTasksMessageData, getTodayDate(), () => generateDailyTaskListMessage(getTodayDate(), userData));
+    await sendDailyMessage(SHOP_CHANNEL_ID, publicShopMessageData, getTodayDate(), () => ({
+        content: `**__Trade all you can!__**\n\nClick the button below to view trades and your personal inventory.`,
+        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('open_personal_shop').setLabel('Visit My Personal Shop').setStyle(ButtonStyle.Success))]
+    }));
+    await sendDailyMessage(USE_ITEMS_CHANNEL_ID, useItemsMessageData, 'messageId', () => ({
+        content: `**__Use Your Items Here!__**\n\n- **${getItemDisplay(TALK_PASS_NAME)}**: A treat for your hard work. Unlocks chat to lighten your heart 💘\n- **${getItemDisplay(MLBB_PASS_NAME)}**: MLBB!`,
+        components: [new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('use_talk_pass').setLabel(`Use 1 ${getItemDisplay(TALK_PASS_NAME)}`).setStyle(ButtonStyle.Primary),
-            new ButtonBuilder().setCustomId('use_mlbb_pass').setLabel(`Use 1 ${getItemDisplay(MLBB_PASS_NAME)}`).setStyle(ButtonStyle.Primary),
-        )];
-        const sentMessage = await channel.send({ content, components });
-        useItemsMessageData = { messageId: sentMessage.id };
-        await saveData();
-    } catch (e) { console.error("Failed to post use items message:", e) }
+            new ButtonBuilder().setCustomId('use_mlbb_pass').setLabel(`Use 1 ${getItemDisplay(MLBB_PASS_NAME)}`).setStyle(ButtonStyle.Primary)
+        )]
+    }));
+    await sendDailyMessage(EMERGENCY_CHANNEL_ID, emergencyMessageData, 'messageId', () => ({
+        content: `**EMERGENCY ALERT SYSTEM**\n\nPress the button below **only in a true emergency**. This will send an alert to everyone.`,
+        components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('trigger_emergency').setLabel('! EMERGENCY !').setStyle(ButtonStyle.Danger))]
+    }));
 }
-
 
 async function setChatChannelPermissions(locked) {
     try {
@@ -325,60 +282,51 @@ async function setChatChannelPermissions(locked) {
 // --- Daily Reset & Cleanup ---
 async function runAutomaticDailyReset() {
     console.log(`Running AUTOMATIC daily reset.`);
-    const today = getTodayDate();
     const yesterday = getYesterdayDate();
     const twoDaysAgo = getTwoDaysAgoDate();
 
-    // Apply penalties for tasks from two days ago
     for (const userId in userData) {
-        const user = userData[userId];
+        const user = await getOrCreateUserData(userId);
+        let dmMessage = `**__Daily Reset Update__**\n\n`;
+
         const completedMainTasks = (user.completed_tasks_by_date[twoDaysAgo] || []).filter(index => index < 5).length;
         const uncompletedCount = 5 - completedMainTasks;
 
         if (uncompletedCount > 0) {
             user.negative_shards = (user.negative_shards ?? 0) + uncompletedCount;
-            let dmMessage = `⚠️ **Daily Task Penalty!** You missed ${uncompletedCount} main task(s) from **${twoDaysAgo}** and received ${uncompletedCount} ${getItemDisplay(NEGATIVE_SHARD_NAME)}.`;
+            dmMessage += `⚠️ You missed ${uncompletedCount} prayer(s) from **${twoDaysAgo}** and received ${uncompletedCount} ${getItemDisplay(NEGATIVE_SHARD_NAME)}.\nCome on, You can do better! I believe in you 🤗\n`;
 
             if (user.negative_shards >= 5) {
                 const shardsToDeduct = Math.floor(user.negative_shards / 5);
                 user.negative_shards %= 5;
                 await removeItemsFromUser(userId, TALK_SHARD_NAME, shardsToDeduct);
-                dmMessage += `\n🚨 Your ${getItemDisplay(NEGATIVE_SHARD_NAME)} count triggered a penalty! **${shardsToDeduct} ${getItemDisplay(TALK_SHARD_NAME)}** has been deducted.`;
+                dmMessage += `🚨 Your negative shard count triggered a penalty! **${shardsToDeduct} ${getItemDisplay(TALK_SHARD_NAME)}** has been deducted.\nA necessary evil 😖\n`;
             }
-            dmMessage += `\nYour totals are now: ${countUserItem(userId, TALK_SHARD_NAME)} ${getItemDisplay(TALK_SHARD_NAME)} and ${user.negative_shards} ${getItemDisplay(NEGATIVE_SHARD_NAME)}.`;
-            await sendDM(userId, dmMessage);
+            dmMessage += `\n`;
         }
+
+        const member = await client.users.fetch(userId).catch(() => null);
+        dmMessage += generateMyItemsMessage(userId, member ? member.username : "Your");
+        await sendDM(userId, dmMessage);
     }
 
-    // Relock chat if it was unlocked yesterday
     if (chatChannelState.isUnlocked && chatChannelState.unlockedDate === yesterday) {
-        console.log(`Relocking chat channel due to daily reset.`);
         await setChatChannelPermissions(true);
     }
 
-    // --- Clean up old messages and data ---
     const targetChannel = await client.channels.fetch(TARGET_CHANNEL_ID).catch(() => null);
     const shopChannel = await client.channels.fetch(SHOP_CHANNEL_ID).catch(() => null);
-    const useItemsChannel = await client.channels.fetch(USE_ITEMS_CHANNEL_ID).catch(() => null);
 
-    // Delete task list from 2 days ago
     if (dailyTasksMessageData[twoDaysAgo]) {
-        await deleteMessageSafe(targetChannel, dailyTasksMessageData[twoDaysAgo].messageId, "2-day-old task message");
-        await deleteMessageSafe(targetChannel, dailyTasksMessageData[twoDaysAgo].introMessageId, "2-day-old intro message");
+        await deleteMessageSafe(targetChannel, dailyTasksMessageData[twoDaysAgo].messageId);
+        await deleteMessageSafe(targetChannel, dailyTasksMessageData[twoDaysAgo].introMessageId);
         delete dailyTasksMessageData[twoDaysAgo];
     }
-    // Delete shop message from yesterday
     if (publicShopMessageData[yesterday]) {
-        await deleteMessageSafe(shopChannel, publicShopMessageData[yesterday].messageId, "yesterday's shop message");
+        await deleteMessageSafe(shopChannel, publicShopMessageData[yesterday].messageId);
         delete publicShopMessageData[yesterday];
     }
-    // Delete old use-items message
-    if (useItemsMessageData.messageId) {
-        await deleteMessageSafe(useItemsChannel, useItemsMessageData.messageId, "old use-items message");
-        useItemsMessageData = {};
-    }
 
-    // Clean user data
     for (const userId in userData) {
         delete userData[userId].completed_tasks_by_date[twoDaysAgo];
         delete userData[userId].daily_rewards_claimed[twoDaysAgo];
@@ -389,23 +337,16 @@ async function runAutomaticDailyReset() {
         });
     }
     await saveData();
-    console.log(`Automatic daily data cleanup and penalty application complete.`);
+    console.log(`Automatic daily data cleanup and inventory DMing complete.`);
 
-    // --- Post Today's New Messages ---
-    try {
-        if (targetChannel) await sendDailyTaskList(targetChannel, 'A new day has begun! Here are today\'s tasks!');
-        await postShopMessage();
-        await postUseItemsMessage();
-    } catch (error) {
-        console.error(`FATAL: Could not send new daily messages after automatic reset.`, error);
-    }
+    await postAllDailyMessages();
 }
 
 async function handleManualReset(commandChannel) {
     console.log('Handling manual reset command...');
-    // Fetch all channels at once
     const channels = {};
-    for (const { id, name } of [{ id: TARGET_CHANNEL_ID, name: 'main tasks' }, { id: SHOP_CHANNEL_ID, name: 'shop' }, { id: USE_ITEMS_CHANNEL_ID, name: 'use items' }]) {
+    for (const { id, name } of [{ id: TARGET_CHANNEL_ID, name: 'main tasks' }, { id: SHOP_CHANNEL_ID, name: 'shop' }, { id: USE_ITEMS_CHANNEL_ID, name: 'use items' }, {id: EMERGENCY_CHANNEL_ID, name: 'emergency'}]) {
+        if(!id) continue;
         try {
             const channel = await client.channels.fetch(id);
             if (!channel || channel.type !== ChannelType.GuildText) throw new Error();
@@ -417,7 +358,6 @@ async function handleManualReset(commandChannel) {
 
     if (chatChannelState.isUnlocked) await setChatChannelPermissions(true);
 
-    // Delete messages for today and yesterday
     for (const date of [getTodayDate(), getYesterdayDate()]) {
         if (dailyTasksMessageData[date]) {
             await deleteMessageSafe(channels.maintasks, dailyTasksMessageData[date].messageId);
@@ -431,8 +371,9 @@ async function handleManualReset(commandChannel) {
     }
     await deleteMessageSafe(channels.useitems, useItemsMessageData.messageId);
     useItemsMessageData = {};
+    await deleteMessageSafe(channels.emergency, emergencyMessageData.messageId);
+    emergencyMessageData = {};
 
-    // Clear user data for today and yesterday
     for (const userId in userData) {
         delete userData[userId].completed_tasks_by_date[getTodayDate()];
         delete userData[userId].daily_rewards_claimed[getTodayDate()];
@@ -441,10 +382,7 @@ async function handleManualReset(commandChannel) {
     }
     await saveData();
 
-    // Post fresh messages
-    if (channels.maintasks) await sendDailyTaskList(channels.maintasks, "As requested, here is a fresh daily task list!");
-    await postShopMessage();
-    await postUseItemsMessage();
+    await postAllDailyMessages();
 
     await commandChannel.send({ content: `✅ Daily tasks and messages have been reset! Chat channel relocked.`, ephemeral: true });
 }
@@ -454,17 +392,11 @@ client.on("ready", async () => {
     console.log(`Logged in as ${client.user.tag}!`);
     await loadData();
 
-    // Schedule automatic reset for 12:00 PM (noon) PKT
-    cron.schedule('0 7 * * *', runAutomaticDailyReset, { timezone: "Asia/Karachi" });
-    console.log(`Automatic daily reset scheduled for 12:00 PM PKT (07:00 UTC).`);
+    // Schedule reset for 12:00 PM (noon) local time of the server.
+    cron.schedule('0 12 * * *', runAutomaticDailyReset);
+    console.log(`Automatic daily reset scheduled for 12:00 PM local time.`);
 
-    // On startup, ensure today's messages exist
-    const today = getTodayDate();
-    if (!dailyTasksMessageData[today]?.messageId || !publicShopMessageData[today]?.messageId || !useItemsMessageData.messageId) {
-        console.log("One or more daily messages are missing on startup. Running a reset to generate them.");
-        // We run a limited version of reset, without penalties
-        await handleManualReset({ send: (msg) => console.log("Startup Reset:", msg.content) });
-    }
+    await postAllDailyMessages();
 });
 
 client.on("messageCreate", async msg => {
@@ -480,14 +412,17 @@ client.on("messageCreate", async msg => {
             const helpEmbed = new EmbedBuilder()
                 .setColor(0x5865F2)
                 .setTitle('🤖 Bot Features and Commands')
-                .setDescription(`This bot helps track daily tasks, earn items, and use them for server features.`)
+                .setDescription(`This bot helps track prayers, Qur'an, earn items, and use them for rightfully earned Freedom.`)
                 .addFields(
-                    { name: '📅 Daily Tasks & Rewards', value: `- A new task list appears daily in <#${TARGET_CHANNEL_ID}>.\n- Complete 5 main tasks for a ${getItemDisplay(MAIN_GROUP_REWARD_ITEM)}.\n- Complete the special task for an ${getItemDisplay(SPECIAL_TASK_REWARD_ITEM)}.\n- **Penalty**: Missed main tasks from 2 days ago result in ${getItemDisplay(NEGATIVE_SHARD_NAME)}. At 5 shards, 1 ${getItemDisplay(TALK_SHARD_NAME)} is deducted.` },
-                    { name: '🛍️ Shop & Items', value: `- Visit <#${SHOP_CHANNEL_ID}> or use \`!shop\` to trade items.\n- **${getItemDisplay(TALK_PASS_NAME)}**: Unlocks chat. Trade 7x ${getItemDisplay(TALK_SHARD_NAME)} or 2x ${getItemDisplay(MLBB_PASS_NAME)}.\n- **${getItemDisplay(MLBB_PASS_NAME)}**: Fun pass. Trade 3x ${getItemDisplay(MLBB_SHARD_NAME)}.` },
-                    { name: '🎟️ Item Usage', value: `- Go to <#${USE_ITEMS_CHANNEL_ID}> to use passes.\n- A ${getItemDisplay(TALK_PASS_NAME)} unlocks <#${CHAT_CHANNEL_ID}> for everyone until the next daily reset.` },
+                    { name: '📅 Daily Tasks & Rewards', value: `- A new task list appears daily in <#${TARGET_CHANNEL_ID}>.\n- Pray all 5 prayers for a ${getItemDisplay(MAIN_GROUP_REWARD_ITEM)}.\n- Read the Qur'an for a ${getItemDisplay(SPECIAL_TASK_REWARD_ITEM)}.\n- **Penalty**: Missed prayers from 2 days ago result in ${getItemDisplay(NEGATIVE_SHARD_NAME)}. At 5 negative shards, 1 ${getItemDisplay(TALK_SHARD_NAME)} is deducted.` },
+                    { name: '🛍️ Shop & Items', value: `- Visit <#${SHOP_CHANNEL_ID}> or use \`!shop\` to trade items.\n- **${getItemDisplay(TALK_PASS_NAME)}**: Unlocks chat. Trade for 7x ${getItemDisplay(TALK_SHARD_NAME)} or 2x ${getItemDisplay(MLBB_PASS_NAME)}.\n- **${getItemDisplay(MLBB_PASS_NAME)}**: Fun pass. Trade for 3x ${getItemDisplay(MLBB_SHARD_NAME)}.` },
+                    { name: '🎟️ Item Usage', value: `- Go to <#${USE_ITEMS_CHANNEL_ID}> to use passes.\n- A ${getItemDisplay(TALK_PASS_NAME)} unlocks <#${CHAT_CHANNEL_ID}> for you lovebirds until the next daily reset.\n- A ${getItemDisplay(MLBB_PASS_NAME)} allows fun time in MLBB!` },
                     { name: '👤 User Commands', value: `\`!todo\` - View your personal task status.\n\`!myitems\` - See your inventory.\n\`!shop\` - Open your private shop menu.` },
                     { name: '👑 Admin Commands', value: `\`!resetdaily\` - Manually resets all daily messages and tasks.\n\`!resetall\` - **DANGEROUS!** Wipes all bot data.\n\`!adjustitem <give|take|set> @user "Item Name" <amount>\` - Modify a user's items.` }
                 );
+            if(EMERGENCY_CHANNEL_ID){
+                 helpEmbed.addFields({ name: '🚨 Emergency', value: `An emergency alert system is available in <#${EMERGENCY_CHANNEL_ID}>.` });
+            }
             const dismissRow = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('dismiss_help').setLabel('Dismiss').setStyle(ButtonStyle.Secondary));
             await msg.reply({ embeds: [helpEmbed], components: [dismissRow], ephemeral: true });
         }
@@ -507,13 +442,7 @@ client.on("messageCreate", async msg => {
             await msg.reply({ content, components: [dismissRow], ephemeral: true });
         } 
         else if (cmd === "myitems") {
-            await getOrCreateUserData(discordUserId);
-            const responseContent = `**__${msg.author.username}'s Items__**\n\n`
-                + `${getItemDisplayWithQuantity(TALK_SHARD_NAME, countUserItem(discordUserId, TALK_SHARD_NAME))}\n`
-                + `${getItemDisplayWithQuantity(MLBB_SHARD_NAME, countUserItem(discordUserId, MLBB_SHARD_NAME))}\n`
-                + `${getItemDisplayWithQuantity(TALK_PASS_NAME, countUserItem(discordUserId, TALK_PASS_NAME))}\n`
-                + `${getItemDisplayWithQuantity(MLBB_PASS_NAME, countUserItem(discordUserId, MLBB_PASS_NAME))}\n`
-                + `${getItemDisplayWithQuantity(NEGATIVE_SHARD_NAME, countUserItem(discordUserId, NEGATIVE_SHARD_NAME))}`;
+            const responseContent = generateMyItemsMessage(discordUserId, msg.author.username);
             const dismissRow = new ActionRowBuilder().addComponents(new ButtonBuilder().setCustomId('dismiss_myitems').setLabel('Dismiss').setStyle(ButtonStyle.Secondary));
             await msg.reply({ content: responseContent, components: [dismissRow], ephemeral: true });
         }
@@ -529,6 +458,7 @@ client.on("messageCreate", async msg => {
             dailyTasksMessageData = {};
             publicShopMessageData = {};
             useItemsMessageData = {};
+            emergencyMessageData = {};
             userData = {};
             chatChannelState = { isUnlocked: false, unlockedBy: null, unlockedDate: null };
             await saveData();
@@ -590,12 +520,12 @@ client.on('interactionCreate', async interaction => {
                 if (allMainTasksDone && !rewardsClaimedToday.mainGroup) {
                     await addItemToUser(userId, MAIN_GROUP_REWARD_ITEM);
                     rewardsClaimedToday.mainGroup = true;
-                    rewardMessage += `\n🎉 Congrats! You completed all main tasks and got a **${getItemDisplay(MAIN_GROUP_REWARD_ITEM)}**!`;
+                    rewardMessage += `\n\n🎉 Well done praying all 5 prayers! Here's your little treat:\n**${getItemDisplay(MAIN_GROUP_REWARD_ITEM)}**!`;
                 }
                 if (completedTasks.includes(5) && !rewardsClaimedToday.specialTask) {
                     await addItemToUser(userId, SPECIAL_TASK_REWARD_ITEM);
                     rewardsClaimedToday.specialTask = true;
-                    rewardMessage += `\n🎉 Congrats! You completed the special task and got a **${getItemDisplay(SPECIAL_TASK_REWARD_ITEM)}**!`;
+                    rewardMessage += `\n\nRead the Qur'an?\n🎉 That's Awesome! Here's your reward:\n**${getItemDisplay(SPECIAL_TASK_REWARD_ITEM)}**!`;
                 }
                 user.daily_rewards_claimed[taskDate] = rewardsClaimedToday;
             }
@@ -634,7 +564,7 @@ client.on('interactionCreate', async interaction => {
             const passType = interaction.customId === 'use_talk_pass' ? TALK_PASS_NAME : MLBB_PASS_NAME;
             const user = await getOrCreateUserData(userId);
 
-            if (countUserItem(userId, passType) < 1) return interaction.reply({ content: `❌ You don't have any ${getItemDisplay(passType)}!`, ephemeral: true });
+            if (countUserItem(userId, passType) < 1) return interaction.reply({ content: `❌ You don't have any ${getItemDisplay(passType)}!\nKeep grinding! No pain no gain! 💪\nBest of luck 🍀`, ephemeral: true });
 
             const confirmRow = new ActionRowBuilder().addComponents(
                 new ButtonBuilder().setCustomId(`confirm_${interaction.customId}`).setLabel(`Yes, use 1 ${passType}`).setStyle(ButtonStyle.Danger),
@@ -651,16 +581,16 @@ client.on('interactionCreate', async interaction => {
                 return interaction.editReply({ content: `❌ You have already used a ${getItemDisplay(passType)} today!`, components: [] });
             }
             if (passType === TALK_PASS_NAME && chatChannelState.isUnlocked) {
-                 return interaction.editReply({ content: `❌ The chat channel is already unlocked by <@${chatChannelState.unlockedBy}>!`, components: [] });
+                 return interaction.editReply({ content: `❌ The chat channel is already unlocked by <@${chatChannelState.unlockedBy}>!\nEnjoy your lovely talks ❤`, components: [] });
             }
 
             if (await removeItemsFromUser(userId, passType, 1)) {
                 user.pass_usage_by_date[passType] = getTodayDate();
-                let announcement = `🎉 **${interaction.user.username}** has used 1 ${getItemDisplay(MLBB_PASS_NAME)}! GG!`;
+                let announcement = `🎉 **${interaction.user.username}** has used 1 ${getItemDisplay(MLBB_PASS_NAME)}! Have a great time!`;
                 if (passType === TALK_PASS_NAME) {
                     await setChatChannelPermissions(false);
                     chatChannelState.unlockedBy = userId;
-                    announcement = `📢 **${interaction.user.username}** has used 1 ${getItemDisplay(TALK_PASS_NAME)}! The chat channel (<#${CHAT_CHANNEL_ID}>) is now **UNLOCKED**!`;
+                    announcement = `🎉 **${interaction.user.username}** has used 1 ${getItemDisplay(TALK_PASS_NAME)}! The chat channel (<#${CHAT_CHANNEL_ID}>) is now **UNLOCKED**!\nTalk all you want, LoveBirds 💞`;
                 }
                 await saveData();
                 const announcementChannel = await client.channels.fetch(ANNOUNCEMENT_CHANNEL_ID).catch(() => null);
@@ -669,6 +599,19 @@ client.on('interactionCreate', async interaction => {
             } else {
                  await interaction.editReply({ content: `❌ You do not have enough ${getItemDisplay(passType)}.`, components: [] });
             }
+        }
+        else if (interaction.customId === 'trigger_emergency') {
+            const confirmButton = new ButtonBuilder().setCustomId('confirm_emergency_ping').setLabel('CONFIRM PING @everyone').setStyle(ButtonStyle.Danger);
+            const row = new ActionRowBuilder().addComponents(confirmButton);
+            await interaction.reply({
+                content: '🛑 **Are you absolutely sure?** This will send an alert to everyone in the server.',
+                components: [row],
+                ephemeral: true
+            });
+        }
+        else if (interaction.customId === 'confirm_emergency_ping') {
+            await interaction.update({ content: '✅ Emergency alert sent.', components: [] });
+            await interaction.channel.send(`🚨 @everyone EMERGENCY ALERT TRIGGERED BY ${interaction.user}! 🚨`);
         }
         else if (['dismiss_shop', 'dismiss_todo', 'dismiss_help', 'dismiss_myitems', 'cancel_use'].includes(interaction.customId)) {
             await interaction.message.delete().catch(() => {});
